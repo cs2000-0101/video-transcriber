@@ -15,3 +15,7 @@ transcripts/
 # Python 字节码
 __pycache__/
 *.pyc
+
+# Python 编译文件（更全面的匹配）
+*.py[cod]
+*.pyo
