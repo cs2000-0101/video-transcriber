@@ -1,0 +1,25 @@
+# ============================================================
+# Video-Transcriber 运行时依赖
+# 安装方式: pip install -r requirements.txt
+# ============================================================
+
+# --- 语音识别核心 ---
+faster-whisper>=1.0.0          # OpenAI Whisper 的 CTranslate2 推理实现，GPU 加速
+
+# --- faster-whisper 底层依赖 ---
+ctranslate2>=4.0.0             # Transformer 模型的高性能推理引擎（CUDA/cuBLAS）
+
+# --- 输出格式化 ---
+python-docx>=1.0.0             # 生成 Word (.docx) 格式转录结果
+
+# --- 配置解析 ---
+PyYAML>=6.0                    # YAML 配置文件解析
+
+# --- 进度显示 ---
+tqdm>=4.64.0                   # 终端进度条，用于显示转录进度
+
+# --- 数值计算 ---
+numpy>=1.24.0                  # 数组运算，短时能量计算与静音检测
+
+# --- 音频处理 ---
+soundfile>=0.12.0              # WAV 音频文件读写（分段后的临时音频片段）

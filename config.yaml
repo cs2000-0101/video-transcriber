@@ -1,0 +1,88 @@
+# ============================================================
+# Video-Transcriber 配置文件
+# 语音转文字工具 —— 视频/音频批量转录
+# ============================================================
+
+# --- 模型配置 ---
+# faster-whisper 模型相关参数
+model:
+  # Whisper 模型大小，可选值: tiny, base, small, medium, large-v2, large-v3
+  # - tiny/base: 速度快但准确率低，适合实时场景
+  # - small/medium: 平衡速度与准确率
+  # - large-v2/large-v3: 最高准确率，large-v3 对中文识别效果最好
+  # 推荐值: large-v3（中文场景最佳），medium（速度优先）
+  size: large-v3
+
+  # 模型计算精度，可选值: float16, int8_float16, int8
+  # - float16: GPU 半精度浮点，显存充足时推荐，速度最快
+  # - int8_float16: 8-bit 量化（矩阵乘法 int8，其余 float16），显存紧张时使用
+  # - int8: 纯 8-bit 量化，适合 CPU 推理
+  # 推荐值: float16（RTX 4070 Laptop 8GB 显存足够）
+  compute_type: float16
+
+  # 转录目标语言，空字符串 "" 表示自动检测
+  # 指定语言可提高准确率，常用值: zh(中文), en(英语), ja(日语), ko(韩语)
+  # 推荐值: zh（中文场景），空字符串（多语言混合场景）
+  language: zh
+
+  # 模型下载与缓存目录
+  # faster-whisper 首次运行时会自动下载模型到此目录
+  # 推荐值: "./models"（项目根目录下，避免占用 C 盘空间）
+  download_root: "./models"
+
+# --- 音频分段配置 ---
+# 长音频分段策略：基于静音边界检测，确保不在句子中间截断
+audio_splitting:
+  # 最大段长度（秒），超过此长度的音频会被静音边界检测自动分段
+  # 每段独立送入 GPU 转录，分段越短显存占用越低
+  # 推荐值: 600（10 分钟），RTX 4070 8GB 显存下安全运行
+  max_segment_length: 600
+
+  # 静音检测阈值（dBFS），音量低于此值视为静音
+  # 更负的值 = 更敏感（更容易检测到静音）
+  # 推荐值: -40（一般环境），安静环境可设为 -50
+  silence_threshold: -40
+
+  # 最小静音持续时长（毫秒），连续静音超过此时长才可作为分段点
+  # 避免在说话人的短暂停顿处断句
+  # 推荐值: 500（0.5 秒）
+  min_silence_duration: 500
+
+  # 相邻分段之间的重叠时长（毫秒）
+  # 保证分段边界处的词语不会被截断丢失
+  # 推荐值: 200（0.2 秒）
+  overlap_duration: 200
+
+# --- 音频提取配置 ---
+# ffmpeg 从视频中提取音频时的参数
+audio_extraction:
+  # 输出采样率（Hz），faster-whisper 模型要求输入为 16000 Hz
+  # 不要修改此值，除非你清楚知道自己在做什么
+  # 推荐值: 16000
+  sample_rate: 16000
+
+# --- 输出配置 ---
+# 转录结果的输出格式与路径
+output:
+  # 输出文件格式，可选值: md, docx, both
+  # - md: 仅输出 Markdown 纯文本文件
+  # - docx: 仅输出 Word 文档（带格式）
+  # - both: 同时输出 .md 和 .docx 两种格式
+  # 推荐值: both
+  format: both
+
+  # 是否在输出文本中插入时间戳标记 [HH:MM:SS]
+  # true: 每段文本前添加时间戳，方便定位视频位置
+  # false: 仅输出纯文本，适合直接阅读
+  # 推荐值: true
+  with_timestamps: true
+
+  # 转录结果输出目录
+  # 所有生成的 .md 和 .docx 文件都会保存到此目录
+  # 推荐值: "./transcripts"（项目根目录下）
+  output_dir: "./transcripts"
+
+# --- 临时文件目录 ---
+# 从视频中提取的临时 WAV 音频存放位置，转录完成后自动清理
+# 推荐值: "./temp"（项目根目录下）
+temp_dir: "./temp"

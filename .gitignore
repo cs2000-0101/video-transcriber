@@ -1,0 +1,17 @@
+# Video-Transcriber 项目 gitignore
+
+# Alma 快照（工作区状态记录）
+.alma-snapshots
+
+# 模型文件（体积大，运行时自动下载）
+models/
+
+# 临时音频文件（运行时生成，转录后清理）
+temp/
+
+# 转录输出（用户生成内容，不纳入版本控制）
+transcripts/
+
+# Python 字节码
+__pycache__/
+*.pyc
