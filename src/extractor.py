@@ -13,6 +13,46 @@ from pathlib import Path
 
 
 # ============================================================
+# ffmpeg 路径检测
+# ============================================================
+
+def _find_ffmpeg() -> str:
+    """在 Windows 上自动查找 ffmpeg 可执行文件。
+
+    搜索顺序：
+    1. 常见安装目录
+    2. 系统 PATH 中的 ffmpeg
+
+    Returns:
+        ffmpeg 的完整路径
+
+    Raises:
+        FileNotFoundError: 未找到 ffmpeg
+    """
+    # 常见 Windows 安装路径
+    candidates = [
+        "D:/ProgramData/ffmpeg-7.1-full_build/bin/ffmpeg.exe",
+        "C:/ffmpeg/bin/ffmpeg.exe",
+        "C:/Program Files/ffmpeg/bin/ffmpeg.exe",
+        "ffmpeg",  # 回退到 PATH
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    # 最后尝试 PATH
+    if shutil.which("ffmpeg"):
+        return "ffmpeg"
+    raise FileNotFoundError(
+        "未找到 ffmpeg。\n"
+        "请安装 ffmpeg 或修改 extractor.py 中的 _find_ffmpeg() 添加你的安装路径。\n"
+        "下载地址: https://ffmpeg.org/download.html"
+    )
+
+# 模块级常量，启动时自动检测
+FFMPEG_PATH = _find_ffmpeg()
+
+
+# ============================================================
 # 支持的格式常量
 # ============================================================
 
@@ -89,7 +129,7 @@ def _run_ffmpeg(input_path: str, output_path: str) -> None:
         RuntimeError: ffmpeg 执行失败
     """
     cmd = [
-        "ffmpeg",
+        FFMPEG_PATH,
         "-i", input_path,
         "-vn",                      # 忽略视频流（对音频文件无害）
         "-acodec", "pcm_s16le",     # 输出格式：PCM 16-bit little-endian
@@ -104,6 +144,8 @@ def _run_ffmpeg(input_path: str, output_path: str) -> None:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except FileNotFoundError:
         raise FileNotFoundError(

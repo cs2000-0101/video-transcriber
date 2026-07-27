@@ -34,7 +34,7 @@ DEFAULTS: Dict[str, Any] = {
 # ============================================================
 # 有效值集合 —— 用于验证枚举类字段
 # ============================================================
-VALID_MODEL_SIZES = {"tiny", "base", "small", "medium", "large-v2", "large-v3"}
+VALID_MODEL_SIZES = {"tiny", "base", "small", "medium", "large-v2", "large-v3", "distil-large-v3"}
 VALID_COMPUTE_TYPES = {"float16", "int8_float16", "int8"}
 VALID_OUTPUT_FORMATS = {"md", "docx", "both"}
 

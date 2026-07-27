@@ -112,46 +112,28 @@ python main.py your_video.mp4
 
 ## 🚀 使用方法
 
-### 基本用法
-
 ```bash
-# 单个视频文件
+# 单个文件
 python main.py video.mp4
 
-# 多个文件批量处理
-python main.py meeting1.mp4 lecture2.mp3 podcast3.wav
+# 多个文件批量
+python main.py meeting1.mp4 lecture2.mp3
 
-# 扫描整个文件夹（递归）
+# 扫描整个文件夹
 python main.py ./videos/
 
-# 混合输入：文件夹 + 文件
-python main.py ./videos/ extra_audio.mp3
+# 指定输出目录（默认 ./out）
+python main.py video.mp4 -o ./我的转录结果
+
+# 混合：文件夹 + 单个文件 + 指定输出
+python main.py ./videos/ extra.mp3 -o ./output
 ```
-
-### 指定配置文件
-
-```bash
-python main.py video.mp4 --config custom_config.yaml
-# 或使用简写
-python main.py video.mp4 -c custom_config.yaml
-```
-
-### 命令行参数
-
-| 参数 | 说明 | 示例 |
-|------|------|------|
-| `paths` | 输入文件或文件夹路径（必填，支持多个） | `video.mp4 ./folder/` |
-| `--config`, `-c` | 自定义配置文件路径 | `--config my_config.yaml` |
 
 ### 输出结果
 
-转录结果默认保存在 `./transcripts/` 目录：
+转录结果默认保存在 `./out/` 目录，文件名与源文件同名（扩展名变为 `.md` 或 `.docx`）。
 
-```
-transcripts/
-├── video_transcript.md      # Markdown 格式（可选时间戳）
-└── video_transcript.docx    # Word 格式（带样式）
-```
+输出目录通过 `-o` 参数或 `config.yaml` 中的 `output.output_dir` 配置。
 
 ### 运行示例
 
@@ -159,38 +141,28 @@ transcripts/
 ============================================================
 Video-Transcriber -- 视频/音频转录工具
 ============================================================
-[配置] 配置文件: ./config.yaml
 [配置] 模型: large-v3 (float16)
 [配置] 语言: zh
-[配置] 输出格式: both
-[配置] 输出目录: ./transcripts
-[配置] 时间戳: 启用
+[配置] 输出格式: md
+[配置] 输出目录: ./out
 
-[扫描] 正在扫描输入路径...
 [扫描] 共发现 1 个文件待处理:
    - E:\videos\meeting.mp4
 
 [初始化] 正在加载转录模型...
 ────────────────────────────────────────────────────────────
 [1/1] meeting.mp4
-────────────────────────────────────────────────────────────
-  [提取] 正在提取/转换音频...
-  [提取] 完成 (2.3s)
-         -> ./temp/meeting.wav
-  [转录] 正在 GPU 转录（faster-whisper）...
-  [转录] 完成 (45.2s)
-         -> 128 个段落, 音频时长 1800.0s, 语言: zh
-  [格式化] 正在生成输出文件...
-  [格式化] 完成 (0.1s)
-         -> ./transcripts/meeting_transcript.md
-         -> ./transcripts/meeting_transcript.docx
-  [耗时] 文件总耗时: 47.8s
+  [提取] 完成 (1.2s)
+  [音频] 时长 22.5 分钟 (1348s)
+  [转录] |████████████████████| 100% | 已完成
+  [转录] 完成 (31.2s) -> 1116 个段落, 语言: zh
+  [格式化] 完成 -> ./out/meeting.md
 
 ============================================================
 [完成] 处理完毕
    成功: 1  |  失败: 0  |  总计: 1
-   总耗时: 55.3s
-   输出目录: E:\项目\语音转文字\transcripts
+   总耗时: 35.0s
+   输出目录: E:\项目\语音转文字\out
 ============================================================
 ```
 
@@ -232,7 +204,7 @@ Video-Transcriber -- 视频/音频转录工具
 |------|------|--------|--------|
 | `format` | 输出格式 | `both` | md, docx, both |
 | `with_timestamps` | 是否包含时间戳 | `true` | true, false |
-| `output_dir` | 输出目录 | `./transcripts` | 任意路径 |
+| `output_dir` | 输出目录 | `./out` | 任意路径 |
 
 ### 临时文件 (`temp_dir`)
 

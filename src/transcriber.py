@@ -9,7 +9,34 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any, Callable, Dict, List, Optional
+
+# ============================================================
+# Windows DLL 路径修复
+# GPU 库（cuBLAS）通过 pip 安装后位于 nvidia 包的深层目录，
+# Windows 下 Python 默认搜不到，需要手动注册 DLL 搜索路径。
+# 必须在 import faster_whisper / ctranslate2 之前执行。
+# ============================================================
+if sys.platform == "win32":
+    import ctypes
+    # 直接预加载 cuBLAS DLL，比 add_dll_directory 更可靠
+    _nvidia_base = os.path.join(
+        os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
+        else sys.prefix, "Lib", "site-packages", "nvidia"
+    )
+    if os.path.isdir(_nvidia_base):
+        for _root, _dirs, _files in os.walk(_nvidia_base):
+            if "bin" in _dirs:
+                _bin_path = os.path.join(_root, "bin")
+                # 加载该 bin 目录下所有 DLL（cublas, cudart, etc.）
+                for _dll_name in os.listdir(_bin_path):
+                    if _dll_name.endswith(".dll"):
+                        _dll_path = os.path.join(_bin_path, _dll_name)
+                        try:
+                            ctypes.cdll.LoadLibrary(_dll_path)
+                        except OSError:
+                            pass
 
 import numpy as np
 import soundfile as sf
@@ -91,6 +118,40 @@ class WhisperTranscriber:
         self._model = None
 
     # ----------------------------------------------------------
+    # 内部：本地模型路径解析
+    # ----------------------------------------------------------
+
+    # 模型短名称 → 可能的本地目录名 映射
+    _MODEL_NAME_CANDIDATES = {
+        "large-v3": ["faster-whisper-large-v3", "models--Systran--faster-whisper-large-v3"],
+        "large-v2": ["faster-whisper-large-v2", "models--Systran--faster-whisper-large-v2"],
+        "distil-large-v3": ["faster-distil-whisper-large-v3", "models--Systran--faster-distil-whisper-large-v3"],
+        "medium": ["faster-whisper-medium", "models--Systran--faster-whisper-medium"],
+        "small": ["faster-whisper-small", "models--Systran--faster-whisper-small"],
+        "base": ["faster-whisper-base", "models--Systran--faster-whisper-base"],
+        "tiny": ["faster-whisper-tiny", "models--Systran--faster-whisper-tiny"],
+    }
+
+    def _resolve_local_model_path(self) -> str:
+        """解析本地模型路径，如果 download_root 下已有模型目录则返回绝对路径。
+
+        优先查找 download_root 下的候选目录名，按顺序尝试：
+        1. 简化目录名（如 faster-whisper-large-v3）— 用户手动下载常见格式
+        2. HF 缓存格式（如 models--Systran--faster-whisper-large-v3）— 脚本下载格式
+
+        如果都不存在，返回原始 model_size 短名称，由 faster-whisper 自行处理（会触发联网下载）。
+
+        Returns:
+            本地模型目录的绝对路径，或原始 model_size 短名称
+        """
+        candidates = self._MODEL_NAME_CANDIDATES.get(self.model_size, [self.model_size])
+        for name in candidates:
+            local_path = os.path.join(self.download_root, name)
+            if os.path.isdir(local_path) and os.path.isfile(os.path.join(local_path, "model.bin")):
+                return os.path.abspath(local_path)
+        return self.model_size
+
+    # ----------------------------------------------------------
     # 内部：模型加载
     # ----------------------------------------------------------
 
@@ -116,6 +177,11 @@ class WhisperTranscriber:
 
         # 确保模型下载目录存在
         os.makedirs(self.download_root, exist_ok=True)
+
+        # ---- 优先使用本地模型路径 ----
+        # 如果 download_root 下已有对应的模型目录，直接用本地路径，
+        # 避免触发联网下载（国内网络不稳定）
+        model_path = self._resolve_local_model_path()
 
         # ---- 构建回退策略链 ----
         # 每项为 (device, compute_type, description) 三元组
@@ -143,7 +209,7 @@ class WhisperTranscriber:
         for device, compute_type, desc in fallback_chain:
             try:
                 self._model = WhisperModel(
-                    self.model_size,
+                    model_path,  # 优先用本地路径，不存在时用短名称触发下载
                     device=device,
                     compute_type=compute_type,
                     download_root=self.download_root,
@@ -227,166 +293,33 @@ class WhisperTranscriber:
         return audio
 
     # ----------------------------------------------------------
-    # 内部：静音边界检测（能量法）
+    # 内部：均匀分段
     # ----------------------------------------------------------
 
-    def _find_silence_boundaries(
-        self, audio: "np.ndarray", sr: int
-    ) -> List[float]:
-        """基于短时能量检测静音边界，返回候选分段点列表。
-
-        算法流程：
-        1. 以 50ms 窗口计算 RMS 能量
-        2. 转换为 dBFS 分贝值
-        3. 标记低于 silence_threshold 的窗口为"静音"
-        4. 合并连续的静音窗口为静音区间
-        5. 筛选持续时长 >= min_silence_duration 的静音区间
-        6. 取每个静音区间的中点作为候选分段点
-        7. 在候选分段点中选择最接近理想分段位置的作为实际分段边界
-
-        Args:
-            audio: float32 音频数组
-            sr: 采样率（16000 Hz）
-
-        Returns:
-            分段边界时间点列表（秒），升序排列。
-            若音频长度未超过 max_segment_length，返回空列表。
-        """
-        total_duration = len(audio) / sr
-
-        # 无需分段
-        if total_duration <= self.max_segment_length:
-            return []
-
-        # ---- 第 1 步：短时能量计算 ----
-        window_samples = int(sr * 0.05)  # 50ms 窗口
-        hop_samples = window_samples     # 无重叠（省计算）
-
-        num_windows = max(1, (len(audio) - window_samples) // hop_samples + 1)
-
-        rms = np.zeros(num_windows, dtype=np.float64)
-        for i in range(num_windows):
-            start = i * hop_samples
-            end = start + window_samples
-            chunk = audio[start:end].astype(np.float64)
-            rms[i] = np.sqrt(np.mean(chunk ** 2))
-
-        # ---- 第 2 步：转换为 dBFS ----
-        eps = 1e-10
-        dbfs = 20.0 * np.log10(np.maximum(rms, eps))
-
-        # ---- 第 3-4 步：标记静音窗口并合并 ----
-        is_silent = dbfs < self.silence_threshold
-
-        # 最小连续静音窗口数 = min_silence_duration_ms / 1000 * sr / hop_samples
-        min_silent_windows = max(
-            1, int(self.min_silence_duration / 1000.0 * sr / hop_samples)
-        )
-
-        # ---- 第 5 步：提取合格的静音区间中点 ----
-        silence_midpoints: List[float] = []
-        in_silence = False
-        silence_start_idx = 0
-
-        for i, silent in enumerate(is_silent):
-            if silent and not in_silence:
-                in_silence = True
-                silence_start_idx = i
-            elif not silent and in_silence:
-                dur = i - silence_start_idx
-                if dur >= min_silent_windows:
-                    mid_sec = (silence_start_idx + i) / 2.0 * hop_samples / sr
-                    silence_midpoints.append(mid_sec)
-                in_silence = False
-
-        # 处理末尾的静音段
-        if in_silence:
-            dur = len(is_silent) - silence_start_idx
-            if dur >= min_silent_windows:
-                mid_sec = (
-                    (silence_start_idx + len(is_silent)) / 2.0 * hop_samples / sr
-                )
-                silence_midpoints.append(mid_sec)
-
-        # ---- 第 6-7 步：选择最接近理想位置的分段点 ----
-        if not silence_midpoints:
-            # 回退方案：无可用静音区间 → 均匀切分
-            boundaries: List[float] = []
-            pos = float(self.max_segment_length)
-            while pos < total_duration - 1.0:
-                boundaries.append(pos)
-                pos += self.max_segment_length
-            return boundaries
-
-        boundaries = []
-        last_boundary = 0.0
-        pos = float(self.max_segment_length)
-
-        while pos < total_duration - 1.0:
-            # 在所有候选静音中点中，找最接近理想位置 pos 的那个
-            best = None
-            best_dist = float("inf")
-            for sp in silence_midpoints:
-                # 至少离上一个边界 1 秒以上，且离音频结尾至少 1 秒
-                if sp > last_boundary + 1.0 and sp < total_duration - 1.0:
-                    dist = abs(sp - pos)
-                    if dist < best_dist:
-                        best_dist = dist
-                        best = sp
-
-            if best is not None and best > last_boundary:
-                boundaries.append(best)
-                last_boundary = best
-                pos = best + self.max_segment_length
-            else:
-                # 找不到合适的静音点 → 硬切
-                boundaries.append(pos)
-                last_boundary = pos
-                pos += self.max_segment_length
-
-        return boundaries
-
-    # ----------------------------------------------------------
-    # 内部：构建分段区间
-    # ----------------------------------------------------------
-
-    def _build_segment_ranges(
-        self, boundaries: List[float], total_duration: float
+    def _build_segments(
+        self, total_duration: float
     ) -> List[Dict[str, float]]:
-        """将分段边界转换为带重叠的分段起止时间区间。
+        """按 max_segment_length 均匀切分音频，段间有小重叠防止边界丢失。
+
+        若音频长度未超过 max_segment_length，返回单段（不分段）。
 
         Args:
-            boundaries: 分段边界点列表（秒）
             total_duration: 音频总时长（秒）
 
         Returns:
             分段信息列表，每项包含 {'start': float, 'end': float}
         """
-        overlap_s = self.overlap_duration / 1000.0
-        half_overlap = overlap_s / 2.0
-
-        if not boundaries:
+        if total_duration <= self.max_segment_length:
             return [{"start": 0.0, "end": total_duration}]
 
+        overlap_s = self.overlap_duration / 1000.0
         segments: List[Dict[str, float]] = []
+        pos = 0.0
 
-        # 第一段：0 → 第一个边界 + 半重叠
-        segments.append({
-            "start": 0.0,
-            "end": min(boundaries[0] + half_overlap, total_duration),
-        })
-
-        # 中间段：前一边界 - 半重叠 → 当前边界 + 半重叠
-        for i in range(1, len(boundaries)):
-            start = max(0.0, boundaries[i - 1] - half_overlap)
-            end = min(boundaries[i] + half_overlap, total_duration)
-            segments.append({"start": start, "end": end})
-
-        # 最后一段：最后一个边界 - 半重叠 → 音频结束
-        segments.append({
-            "start": max(0.0, boundaries[-1] - half_overlap),
-            "end": total_duration,
-        })
+        while pos < total_duration:
+            end = min(pos + self.max_segment_length + overlap_s, total_duration)
+            segments.append({"start": pos, "end": end})
+            pos += self.max_segment_length
 
         return segments
 
@@ -398,17 +331,17 @@ class WhisperTranscriber:
         self,
         audio_path: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        segment_progress_callback: Optional[Callable[[float, float], None]] = None,
     ) -> Dict[str, Any]:
         """对音频文件执行语音转文字，返回合并后的完整结果。
 
-        长音频（超过 max_segment_length）会自动在静音边界处分段，
-        每段独立转录后合并。所有 segment 时间戳连续无间隙。
+        长音频（超过 max_segment_length）会自动分段，每段独立转录后合并。
 
         Args:
             audio_path: 16kHz 单声道 WAV 音频文件路径
-            progress_callback: 可选进度回调 callback(current, total)，
-                              current 为当前段索引（从 1 开始），
-                              total 为总段数
+            progress_callback: 可选回调 callback(current_chunk, total_chunks)
+            segment_progress_callback: 可选回调 callback(audio_position_s, total_duration_s)
+                                      基于真实 segment 时间戳，每段触发一次
 
         Returns:
             Dict 包含以下字段:
@@ -424,9 +357,8 @@ class WhisperTranscriber:
         sr = 16000
         total_duration = len(audio) / sr
 
-        # ---- 2. 确定分段边界 ----
-        boundaries = self._find_silence_boundaries(audio, sr)
-        segment_ranges = self._build_segment_ranges(boundaries, total_duration)
+        # ---- 2. 确定分段 ----
+        segment_ranges = self._build_segments(total_duration)
 
         # ---- 3. 加载模型 ----
         model = self._get_model()
@@ -464,11 +396,11 @@ class WhisperTranscriber:
                         progress_callback(idx + 1, num_segments)
                     continue
 
-                # 转录（启用 VAD 过滤非语音片段）
+                # 转录（VAD 对中文会议识别有负面影响，默认关闭）
                 segments_gen, info = model.transcribe(
                     chunk,
                     language=self.language,
-                    vad_filter=True,
+                    vad_filter=False,
                     beam_size=5,
                 )
 
@@ -483,6 +415,11 @@ class WhisperTranscriber:
                         "end": round(start_t + seg.end, 3),
                         "text": seg.text.strip(),
                     })
+                    # 基于真实时间戳的进度回调
+                    if segment_progress_callback:
+                        segment_progress_callback(
+                            start_t + seg.end, total_duration
+                        )
 
                 pbar.update(1)
 

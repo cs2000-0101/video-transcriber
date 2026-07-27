@@ -115,7 +115,7 @@ def main() -> None:
     """命令行入口主函数。
 
     流程：
-    1. 解析命令行参数（paths + --config）
+    1. 解析命令行参数（paths + --output）
     2. 加载配置文件（验证 + 默认值回退）
     3. 从 paths 收集所有支持格式的文件
     4. 初始化 WhisperTranscriber（全局单例，模型仅加载一次）
@@ -130,7 +130,7 @@ def main() -> None:
   python main.py video.mp4                       # 单个视频文件
   python main.py file1.mp4 file2.mp3             # 多个文件批量处理
   python main.py ./videos/                       # 扫描文件夹
-  python main.py video.mp4 --config custom.yaml  # 指定配置文件
+  python main.py video.mp4 -o ./output           # 指定输出目录
         """,
     )
     parser.add_argument(
@@ -139,9 +139,9 @@ def main() -> None:
         help="输入文件或文件夹路径（支持视频和音频格式）",
     )
     parser.add_argument(
-        "--config", "-c",
-        default="./config.yaml",
-        help="自定义配置文件路径（默认: ./config.yaml）",
+        "--output", "-o",
+        default=None,
+        help="输出目录（默认: ./out）",
     )
 
     args = parser.parse_args()
@@ -152,14 +152,17 @@ def main() -> None:
     print("=" * 60)
 
     # ---- 1. 加载配置 ----
-    config_path = args.config
+    config_path = "./config.yaml"
     try:
         config = load_config(config_path)
     except (FileNotFoundError, ValueError) as e:
         print(f"[错误] 配置加载失败: {e}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[配置] 配置文件: {config_path}")
+    # 命令行 -o 参数覆盖输出目录
+    if args.output:
+        config.output_output_dir = args.output
+
     print(f"[配置] 模型: {config.model_size} ({config.model_compute_type})")
     language_display = config.model_language if config.model_language else "自动检测"
     print(f"[配置] 语言: {language_display}")
@@ -207,7 +210,6 @@ def main() -> None:
         file_name = os.path.basename(file_path)
         print(f"\n{'─' * 60}")
         print(f"[{idx}/{len(files)}] {file_name}")
-        print(f"{'─' * 60}")
 
         file_start = time.time()
 
@@ -240,10 +242,52 @@ def main() -> None:
                 print(f"  [耗时] {_format_elapsed(file_elapsed)}")
                 continue  # 跳转到下一个文件，不计入成功或失败
 
+            # 显示音频时长
+            dur_info = f"  [音频] 时长 {wav_duration/60:.1f} 分钟 ({wav_duration:.0f}s)" if wav_duration else ""
+            if dur_info:
+                print(dur_info)
+
             # --- 步骤 2: 转录 ---
             print(f"  [转录] 正在 GPU 转录（faster-whisper）...")
+
             t2 = time.time()
-            result = transcriber.transcribe(wav_path)
+            _last_progress_time = [0.0]
+            _last_pct = [-1]
+
+            def _segment_progress_callback(audio_pos: float, total: float):
+                """基于真实 segment 时间戳的进度回调，每秒刷新"""
+                now = time.time()
+                if now - _last_progress_time[0] < 1.0:
+                    return
+                _last_progress_time[0] = now
+
+                pct = min(audio_pos / total, 1.0) if total > 0 else 0
+                if int(pct * 100) == _last_pct[0]:
+                    return  # 进度没变，跳过
+                _last_pct[0] = int(pct * 100)
+
+                bar_len = 20
+                filled = int(bar_len * pct)
+                bar = "█" * filled + "░" * (bar_len - filled)
+                elapsed = now - t2
+                if pct > 0.01:
+                    eta = (elapsed / pct) * (1 - pct)
+                    eta_str = _format_elapsed(eta)
+                else:
+                    eta_str = "计算中..."
+                print(
+                    f"\r  [转录] |{bar}| {pct:.0%} | "
+                    f"已用时 {_format_elapsed(elapsed)} | 预计剩余 {eta_str}",
+                    end="", flush=True,
+                )
+
+            result = transcriber.transcribe(
+                wav_path,
+                segment_progress_callback=_segment_progress_callback,
+            )
+            # 进度条结束，补齐到 100% 后换行
+            print(f"\r  [转录] |{'█' * 20}| 100% | 已完成" + " " * 20)
+
             t3 = time.time()
             num_segs = len(result.get("segments", []))
             duration = result.get("duration", 0)
